@@ -269,7 +269,7 @@ main() {
   [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || die "Format token Telegram tidak valid (contoh: 123456789:AA...)."
   ask TELEGRAM_ALLOWED_USERS "User ID Telegram yang boleh memerintah (pisahkan koma)"
   TELEGRAM_ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS// /}"
-  [[ "$TELEGRAM_ALLOWED_USERS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "User ID harus angka, contoh: 6123456789 (beberapa dipisah koma)."
+  [[ "$TELEGRAM_ALLOWED_USERS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "User ID harus angka, contoh: 6xxxxx8 (beberapa dipisah koma)."
   TELEGRAM_HOME_CHANNEL="${TELEGRAM_HOME_CHANNEL:-${TELEGRAM_ALLOWED_USERS%%,*}}"
 
   ask HERMES_PROVIDER "Provider AI, ketik nama saja (deepseek/openrouter)" "deepseek"
