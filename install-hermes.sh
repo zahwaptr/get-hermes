@@ -11,7 +11,7 @@
 #  Tanpa pertanyaan (cocok untuk otomatisasi):
 #    curl -fsSL https://get.zahwajuliana.web.id/install-hermes.sh | \
 #      TELEGRAM_BOT_TOKEN="123:ABC..." TELEGRAM_ALLOWED_USERS="6xxxxxxx5" \
-#      TELEGRAM_USER_NAMES="Zahwa" HERMES_PROVIDER=deepseek DEEPSEEK_API_KEY="sk-..." \
+#      HERMES_PROVIDER=deepseek DEEPSEEK_API_KEY="sk-..." \
 #      AGENT_NAME="Lawawa" AGENT_ROLE="asisten AI tim IT" bash
 #
 #  Yang dikerjakan:
@@ -33,7 +33,7 @@
 #    HERMES_PROVIDER        deepseek | openrouter            (default: deepseek)
 #    HERMES_MODEL           nama model (default: deepseek-chat / deepseek/deepseek-v4-flash)
 #    TELEGRAM_HOME_CHANNEL  chat tujuan laporan otomatis (default: user ID pertama)
-#    TELEGRAM_USER_NAMES    nama tiap user ID, urutan sama, dipisah koma (contoh: "Zahwa,Raihan")
+#    TELEGRAM_USER_NAMES    opsional: nama tiap user ID, urutan sama, dipisah koma (default: pakai nama Telegram)
 #    AGENT_NAME             nama agent                       (default: Hermes)
 #    AGENT_ROLE             peran agent                      (default: asisten AI pribadi)
 #    AGENT_ORG              organisasi/perusahaan, "-" = tidak ada
@@ -55,11 +55,20 @@ DEFAULT_TASKS="Menjawab pertanyaan dan membantu riset; Membantu menulis, merapik
 
 # ---------- tampilan ----------
 if [ -t 1 ]; then
-  C_B=$'\033[1m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_C=$'\033[36m'; C_0=$'\033[0m'
+  C_B=$'\033[1m'; C_D=$'\033[2m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_C=$'\033[36m'; C_0=$'\033[0m'
 else
-  C_B=""; C_G=""; C_Y=""; C_R=""; C_C=""; C_0=""
+  C_B=""; C_D=""; C_G=""; C_Y=""; C_R=""; C_C=""; C_0=""
 fi
-step() { printf '\n%s==>%s %s%s%s\n' "$C_C" "$C_0" "$C_B" "$*" "$C_0"; }
+STEP_NO=0
+STEP_TOTAL=7
+step() { # judul langkah bernomor, supaya orang tahu sudah sampai mana
+  STEP_NO=$((STEP_NO + 1))
+  printf '\n%s%s━━ Langkah %s dari %s: %s ━━%s\n' "$C_C" "$C_B" "$STEP_NO" "$STEP_TOTAL" "$*" "$C_0"
+}
+info() { # keterangan berbahasa sederhana, satu argumen = satu baris
+  local l
+  for l in "$@"; do printf '  %s│ %s%s\n' "$C_D" "$l" "$C_0"; done
+}
 ok()   { printf '  %s✔%s %s\n' "$C_G" "$C_0" "$*"; }
 warn() { printf '  %s!%s %s\n' "$C_Y" "$C_0" "$*"; }
 die()  { printf '\n%s✘ %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
@@ -68,20 +77,29 @@ die()  { printf '\n%s✘ %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
 TTY_OK=0
 if [ -r /dev/tty ] && { : </dev/tty; } 2>/dev/null; then TTY_OK=1; fi
 
-ask() { # ask VAR "Pertanyaan" [default] [secret]
-  local __var="$1" __q="$2" __def="${3:-}" __secret="${4:-}" __ans=""
+ask() { # ask VAR "Pertanyaan" [default] [secret] [keterangan, baris dipisah \n]
+  local __var="$1" __q="$2" __def="${3:-}" __secret="${4:-}" __hint="${5:-}" __ans="" __l __show
   if [ -n "${!__var:-}" ]; then return 0; fi           # sudah diisi lewat env
   if [ "$TTY_OK" != 1 ]; then                          # tanpa terminal: pakai default bila ada
     [ -n "$__def" ] || die "$__var belum diisi dan tidak ada terminal untuk bertanya. Set lewat env, contoh: $__var=... bash"
     printf -v "$__var" '%s' "$__def"
     return 0
   fi
+  if [ -n "$__hint" ]; then                            # keterangan hanya muncul kalau memang ditanya
+    printf '\n' >/dev/tty
+    while IFS= read -r __l; do printf '  %s│ %s%s\n' "$C_D" "$__l" "$C_0" >/dev/tty; done <<<"$__hint"
+  fi
+  __show="$__def"                                       # default yang panjang cukup diringkas
+  if [ "${#__def}" -gt 50 ]; then __show="tekan Enter untuk memakai yang bawaan di atas"; fi
   while [ -z "$__ans" ]; do
-    if [ -n "$__def" ]; then printf '  %s [%s]: ' "$__q" "$__def" >/dev/tty; else printf '  %s: ' "$__q" >/dev/tty; fi
+    if [ -n "$__def" ]; then printf '  %s [%s]: ' "$__q" "$__show" >/dev/tty; else printf '  %s: ' "$__q" >/dev/tty; fi
     if [ "$__secret" = secret ]; then IFS= read -rs __ans </dev/tty; printf '\n' >/dev/tty
     else IFS= read -r __ans </dev/tty; fi
     [ -z "$__ans" ] && __ans="$__def"
   done
+  if [ "$__secret" = secret ]; then
+    printf '  %s✔%s Diterima (%s karakter, sengaja tidak ditampilkan)\n' "$C_G" "$C_0" "${#__ans}" >/dev/tty
+  fi
   printf -v "$__var" '%s' "$__ans"
 }
 
@@ -90,16 +108,6 @@ clean_name() { # buang karakter pemisah supaya aman disimpan di peta id:nama
   local s="${1//[,:]/ }"
   s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"
   printf '%s' "$s"
-}
-
-map_get() { # map_get "id:nama,id:nama" ID → nama (kosong bila tidak ada)
-  local -a pairs=(); local p
-  [ -n "$1" ] || return 0
-  IFS=',' read -r -a pairs <<<"$1"
-  for p in "${pairs[@]}"; do
-    if [ "${p%%:*}" = "$2" ]; then printf '%s' "${p#*:}"; return 0; fi
-  done
-  return 0
 }
 
 tz_label() { # nama zona waktu yang ramah dibaca
@@ -114,7 +122,8 @@ tz_label() { # nama zona waktu yang ramah dibaca
 build_soul() { # cetak isi SOUL.md dari variabel AGENT_*, TG_IDS, TG_NAMES, HERMES_TZ
   local org="" i t host owner
   host="$(hostname 2>/dev/null || echo server)"
-  owner="${TG_NAMES[0]}"
+  owner="pemiliknya (Telegram ID ${TG_IDS[0]})"
+  if [ -n "${TG_NAMES[0]:-}" ]; then owner="${TG_NAMES[0]}"; fi
   if [ -n "$AGENT_ORG" ] && [ "$AGENT_ORG" != "-" ]; then org=" di $AGENT_ORG"; fi
 
   printf '# %s\n\n' "$AGENT_NAME"
@@ -132,15 +141,15 @@ build_soul() { # cetak isi SOUL.md dari variabel AGENT_*, TG_IDS, TG_NAMES, HERM
 
   printf '## Orang yang kamu layani\n'
   printf 'Hanya orang berikut yang boleh memberi perintah kepadamu lewat Telegram:\n'
+  local who
   for i in "${!TG_IDS[@]}"; do
-    if [ "$i" -eq 0 ]; then
-      printf -- '- %s (Telegram ID %s), pemilik dan admin utama\n' "${TG_NAMES[$i]}" "${TG_IDS[$i]}"
-    else
-      printf -- '- %s (Telegram ID %s)\n' "${TG_NAMES[$i]}" "${TG_IDS[$i]}"
-    fi
+    who="Telegram ID ${TG_IDS[$i]}"
+    if [ -n "${TG_NAMES[$i]:-}" ]; then who="${TG_NAMES[$i]} (Telegram ID ${TG_IDS[$i]})"; fi
+    if [ "$i" -eq 0 ]; then printf -- '- %s, pemilik dan admin utama\n' "$who"
+    else printf -- '- %s\n' "$who"; fi
   done
-  printf 'Kenali lawan bicara dari Telegram ID atau nama pengirim pesan, lalu panggil dia dengan namanya.\n'
-  printf 'Kalau pengirim tidak ada di daftar ini, pakai nama tampilan Telegram-nya.\n\n'
+  printf 'Panggil lawan bicara dengan nama tampilan Telegram-nya (nama pengirim pesan).\n'
+  printf 'Kalau namanya tercantum di daftar ini, pakai nama dari daftar.\n\n'
 
   printf '## Saat disapa\n'
   printf 'Ketika seseorang menyapa (misalnya "halo", "hai", "selamat pagi", atau /start), balas dengan singkat:\n'
@@ -172,10 +181,24 @@ build_soul() { # cetak isi SOUL.md dari variabel AGENT_*, TG_IDS, TG_NAMES, HERM
 }
 
 main() {
-  printf '%s\n' "${C_B}Hermes Agent + Telegram — installer satu perintah${C_0}"
+  if [ "${HERMES_SKIP_SERVICE:-0}" = 1 ]; then STEP_TOTAL=6; fi
+  printf '\n%s\n' "${C_B}Hermes Agent + Telegram — installer satu perintah${C_0}"
+  info "Installer ini menyiapkan \"karyawan AI\" yang bisa kamu ajak chat lewat Telegram." \
+       "Perkiraan waktu: 3 sampai 10 menit, tergantung kecepatan internet." \
+       "" \
+       "Siapkan 3 hal ini sebelum mulai:" \
+       "  1. Token bot Telegram   → dari @BotFather (kirim /newbot)" \
+       "  2. User ID Telegram     → dari @userinfobot (kirim pesan apa saja)" \
+       "  3. API key AI           → dari platform.deepseek.com atau openrouter.ai" \
+       "" \
+       "Tips selama instalasi:" \
+       "  • Teks di dalam [kurung siku] adalah jawaban bawaan. Tekan Enter untuk memakainya." \
+       "  • Saat menempel token/API key, layar sengaja tidak menampilkan apa pun. Itu normal." \
+       "  • Tanda ✔ berarti langkah berhasil. Mau batal? Tekan Ctrl+C kapan saja."
 
   # ---------- 1. cek OS ----------
   step "Memeriksa sistem"
+  info "Memastikan server ini memakai sistem operasi yang didukung (Ubuntu/Debian atau Rocky/RHEL)."
   [ "$(uname -s)" = Linux ] || die "Installer ini untuk server Linux. Untuk macOS pakai role Ansible-nya."
   [ -r /etc/os-release ] || die "/etc/os-release tidak ditemukan, distro tidak dikenali."
   # shellcheck disable=SC1091
@@ -194,11 +217,19 @@ main() {
   if [ "$(id -u)" -ne 0 ]; then
     command -v sudo >/dev/null 2>&1 || die "Butuh sudo (atau jalankan sebagai root)."
     SUDO="sudo"
-    sudo -v </dev/tty 2>/dev/null || sudo -v || die "Akses sudo ditolak."
+    if ! sudo -n true 2>/dev/null; then
+      info "" "Installer butuh akses administrator (sudo) untuk memasang program." \
+           "Kalau muncul \"[sudo] password for ...\", ketik password login server kamu lalu tekan Enter." \
+           "Password-nya tidak terlihat saat diketik. Itu normal."
+    fi
+    sudo -v </dev/tty 2>/dev/null || sudo -v || die "Akses sudo ditolak. Pastikan password benar dan akun ini boleh memakai sudo."
   fi
+  ok "Akses administrator siap"
 
   # ---------- 2. paket dasar + user khusus ----------
   step "Memasang paket dasar"
+  info "Memasang alat-alat kecil yang dibutuhkan Hermes, misalnya git (untuk mengunduh program)" \
+       "dan curl (untuk mengakses internet). Biasanya 1 sampai 3 menit. Tunggu sampai muncul tanda ✔."
   if [ "$family" = debian ]; then
     $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq
     $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl tar coreutils nano ca-certificates libatomic1 >/dev/null
@@ -213,9 +244,9 @@ main() {
     if ! id "$HUSER" >/dev/null 2>&1; then
       useradd -m -s /bin/bash "$HUSER"
       if [ "$family" = debian ]; then usermod -aG sudo "$HUSER"; else usermod -aG wheel "$HUSER"; fi
-      ok "User khusus '$HUSER' dibuat (agent tidak berjalan sebagai root)"
+      ok "Akun khusus '$HUSER' dibuat. Agent berjalan di akun ini, bukan root, supaya lebih aman."
     else
-      ok "User '$HUSER' sudah ada"
+      ok "Akun khusus '$HUSER' sudah ada, dipakai lagi"
     fi
   else
     HUSER="${HERMES_USER:-$(id -un)}"
@@ -237,17 +268,21 @@ main() {
 
   # ---------- 3. pasang Hermes ----------
   step "Memasang Hermes Agent"
+  info "Hermes Agent adalah \"otak\" karyawan AI kamu, buatan Nous Research (gratis, open source)."
   if [ -x "$HBIN" ]; then
-    ok "Hermes sudah terpasang di $HBIN (dilewati)"
+    ok "Hermes sudah terpasang di server ini, jadi langkah ini dilewati"
   else
+    info "Programnya diunduh dari situs resmi. Biasanya 2 sampai 5 menit. Mohon tunggu."
     as_user bash -c "set -o pipefail; curl -fsSL '$HERMES_INSTALL_URL' | bash -s -- --non-interactive" \
       || die "Installer Hermes gagal (cek koneksi ke ${HERMES_INSTALL_URL%%/install.sh} dan log di $HDIR/logs/install.log)."
     [ -x "$HBIN" ] || die "Perintah hermes tidak ditemukan di $HBIN setelah instalasi."
-    ok "Hermes terpasang: $HBIN"
+    ok "Hermes berhasil dipasang di $HBIN"
   fi
 
   # ---------- 4a. data Telegram & AI ----------
-  step "Data Telegram dan model AI"
+  step "Menghubungkan Telegram dan AI"
+  info "Agar bisa diajak chat, agent butuh \"kunci\" bot Telegram." \
+       "Agar bisa berpikir, agent butuh akses ke layanan AI lewat API key."
 
   # Pakai lagi token & API key yang sudah tersimpan, supaya jalankan ulang tidak perlu ketik ulang.
   local k v reused=0
@@ -260,74 +295,111 @@ main() {
     done
   fi
   if [ "$reused" = 1 ]; then
-    ok "Memakai token/API key yang sudah tersimpan di $HDIR/.env (ganti dengan HERMES_RESET_SECRETS=1)"
-  elif [ "$TTY_OK" = 1 ]; then
-    printf '  %s\n' "Token dari @BotFather, User ID dari @userinfobot." >/dev/tty
+    ok "Token bot dan API key dari instalasi sebelumnya ditemukan, jadi tidak ditanya lagi"
+    info "Mau mengganti token atau API key? Batalkan (Ctrl+C), lalu jalankan:" \
+         "  curl -fsSL https://get.zahwajuliana.web.id/install-hermes.sh | HERMES_RESET_SECRETS=1 bash"
   fi
 
-  ask TELEGRAM_BOT_TOKEN     "Token bot Telegram (input disembunyikan)" "" secret
-  [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || die "Format token Telegram tidak valid (contoh: 123456789:AA...)."
-  ask TELEGRAM_ALLOWED_USERS "User ID Telegram yang boleh memerintah (pisahkan koma)"
+  ask TELEGRAM_BOT_TOKEN "Tempel token bot Telegram" "" secret \
+"TOKEN BOT = kunci rahasia supaya agent bisa memakai bot Telegram kamu.
+Cara mendapatkannya: buka Telegram → cari @BotFather → kirim /newbot → ikuti instruksinya.
+Bentuknya: angka, titik dua, lalu huruf acak. Contoh: 123456789:AAH4xYz...
+Tempel token lalu tekan Enter. Tulisannya memang tidak muncul di layar."
+  TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN// /}"
+  [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] \
+    || die "Format token bot salah. Token yang benar berbentuk angka:huruf (contoh 123456789:AAH4x...). Salin ulang dari @BotFather, lalu jalankan installer lagi."
+  ask TELEGRAM_ALLOWED_USERS "User ID Telegram yang boleh memberi perintah" "" "" \
+"USER ID = nomor unik akun Telegram. Hanya nomor yang ditulis di sini yang boleh
+memerintah bot. Pesan dari orang lain akan diabaikan, jadi bot kamu aman.
+Cara mendapatkannya: buka Telegram → cari @userinfobot → kirim pesan apa saja → salin angka \"Id\".
+Contoh: 6123456789. Untuk beberapa orang, pisahkan dengan koma: 6123456789,6987654321"
   TELEGRAM_ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS// /}"
-  [[ "$TELEGRAM_ALLOWED_USERS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "User ID harus angka, contoh: 6xxxxx8 (beberapa dipisah koma)."
+  [[ "$TELEGRAM_ALLOWED_USERS" =~ ^[0-9]+(,[0-9]+)*$ ]] \
+    || die "User ID harus berupa angka saja, contoh 6123456789 (beberapa orang dipisah koma). Cek lagi di @userinfobot, lalu jalankan installer lagi."
   TELEGRAM_HOME_CHANNEL="${TELEGRAM_HOME_CHANNEL:-${TELEGRAM_ALLOWED_USERS%%,*}}"
 
-  ask HERMES_PROVIDER "Provider AI, ketik nama saja (deepseek/openrouter)" "deepseek"
+  ask HERMES_PROVIDER "Provider AI, ketik nama saja (deepseek/openrouter)" "deepseek" "" \
+"PROVIDER = perusahaan penyedia \"otak\" AI yang dipakai agent.
+Ketik NAMA-nya saja (deepseek atau openrouter), BUKAN API key.
+Kalau ragu, langsung tekan Enter untuk memakai deepseek (murah dan cukup pintar)."
   HERMES_PROVIDER="$(printf '%s' "$HERMES_PROVIDER" | tr '[:upper:]' '[:lower:]')"
-  local KEYVAR DEFMODEL
+  local KEYVAR DEFMODEL KEYHELP
   case "$HERMES_PROVIDER" in
-    deepseek)   KEYVAR=DEEPSEEK_API_KEY;   DEFMODEL="deepseek-chat" ;;
-    openrouter) KEYVAR=OPENROUTER_API_KEY; DEFMODEL="deepseek/deepseek-v4-flash" ;;
+    deepseek)   KEYVAR=DEEPSEEK_API_KEY;   DEFMODEL="deepseek-chat"
+                KEYHELP="buka platform.deepseek.com → login → menu API Keys → Create new API key." ;;
+    openrouter) KEYVAR=OPENROUTER_API_KEY; DEFMODEL="deepseek/deepseek-v4-flash"
+                KEYHELP="buka openrouter.ai → login → menu Keys → Create Key." ;;
     sk-*) die "Itu API key, bukan nama provider. Jalankan ulang, lalu di pertanyaan provider ketik 'deepseek' atau tekan Enter." ;;
     *) die "Provider '$HERMES_PROVIDER' belum didukung installer ini (pilih deepseek atau openrouter)." ;;
   esac
-  ask "$KEYVAR" "API key $HERMES_PROVIDER (input disembunyikan)" "" secret
+  ask "$KEYVAR" "Tempel API key $HERMES_PROVIDER" "" secret \
+"API KEY = kunci untuk memakai layanan AI. Biaya pemakaian AI ditagihkan ke akun pemilik kunci ini.
+Cara mendapatkannya: $KEYHELP
+Bentuknya diawali sk-... Tempel lalu tekan Enter (tulisannya tidak muncul di layar).
+Jangan bagikan API key ke siapa pun, termasuk lewat screenshot."
   HERMES_MODEL="${HERMES_MODEL:-$DEFMODEL}"
-  ok "Provider: $HERMES_PROVIDER · model: $HERMES_MODEL"
+  ok "Layanan AI: $HERMES_PROVIDER, model: $HERMES_MODEL"
 
   # ---------- 4b. identitas agent (SOUL.md) ----------
-  step "Identitas agent (SOUL.md)"
+  step "Memberi identitas ke agent"
   local PFILE="$HDIR/persona.env"
-  local prev_name prev_role prev_org prev_tasks prev_tz prev_map
+  local prev_name prev_role prev_org prev_tasks prev_tz
   prev_name="$(file_get "$PFILE" AGENT_NAME)"
   prev_role="$(file_get "$PFILE" AGENT_ROLE)"
   prev_org="$(file_get "$PFILE" AGENT_ORG)"
   prev_tasks="$(file_get "$PFILE" AGENT_TASKS)"
   prev_tz="$(file_get "$PFILE" HERMES_TZ)"
-  prev_map="$(file_get "$PFILE" TELEGRAM_USER_MAP)"
 
-  if [ "$TTY_OK" = 1 ]; then
-    printf '  %s\n' "Data ini dipakai agent untuk mengenal dirinya dan orang yang chat dengannya." >/dev/tty
+  info "Sekarang kita memberi \"kepribadian\" ke agent: nama, peran, dan tugasnya." \
+       "Semua ini ditulis ke file SOUL.md, yang dibaca agent setiap kali mulai percakapan." \
+       "Agent otomatis memakai Bahasa Indonesia dan memanggil lawan bicara dengan nama Telegram-nya."
+  if [ -n "$prev_name" ]; then
+    info "Jawaban dari instalasi sebelumnya sudah diisikan di [kurung siku]. Cukup tekan Enter kalau tidak mau diubah."
   fi
 
   # Nama tiap user ID (urutan sama dengan TELEGRAM_ALLOWED_USERS)
   local -a TG_IDS=() TG_NAMES=() ENV_NAMES=()
   IFS=',' read -r -a TG_IDS <<<"$TELEGRAM_ALLOWED_USERS"
   if [ -n "${TELEGRAM_USER_NAMES:-}" ]; then IFS=',' read -r -a ENV_NAMES <<<"$TELEGRAM_USER_NAMES"; fi
-  local i id nm __NM map=""
+  local i id nm map=""
   for i in "${!TG_IDS[@]}"; do
     id="${TG_IDS[$i]}"
     nm="$(clean_name "${ENV_NAMES[$i]:-}")"
-    if [ -z "$nm" ]; then
-      __NM=""
-      ask __NM "Nama pemilik Telegram ID $id" "$(map_get "$prev_map" "$id")"
-      nm="$(clean_name "$__NM")"
-      [ -n "$nm" ] || die "Nama untuk ID $id tidak boleh kosong."
-    fi
     TG_NAMES[i]="$nm"
-    map="${map:+$map,}$id:$nm"
+    if [ -n "$nm" ]; then map="${map:+$map,}$id:$nm"; fi
   done
 
-  ask AGENT_NAME  "Nama agent (nama panggilan bot)"            "${prev_name:-Hermes}"
-  ask AGENT_ROLE  "Peran agent (contoh: asisten AI tim IT)"    "${prev_role:-asisten AI pribadi}"
-  ask AGENT_ORG   "Organisasi/perusahaan (ketik - kalau tidak ada)" "${prev_org:--}"
-  ask AGENT_TASKS "Tugas utama, pisahkan dengan titik koma ;"  "${prev_tasks:-$DEFAULT_TASKS}"
-  ask HERMES_TZ   "Zona waktu"                                 "${prev_tz:-Asia/Jakarta}"
+  ask AGENT_NAME "Nama agent" "${prev_name:-Hermes}" "" \
+"NAMA AGENT = nama panggilan karyawan AI kamu, misalnya Lawawa, Aluna, atau Budi.
+Nama ini dipakai agent saat memperkenalkan diri."
+  ask AGENT_ROLE "Peran agent" "${prev_role:-asisten AI pribadi}" "" \
+"PERAN = jabatan agent dalam satu frasa pendek.
+Contoh: asisten AI tim IT, admin helpdesk, sekretaris pribadi."
+  ask AGENT_ORG "Organisasi/perusahaan" "${prev_org:--}" "" \
+"ORGANISASI = nama kantor atau perusahaan tempat agent bekerja, misalnya PT Excellent.
+Ketik tanda - (strip) atau tekan Enter kalau tidak ada."
+  local task_def="${prev_tasks:-$DEFAULT_TASKS}" task_list="" t
+  local -a task_arr=()
+  IFS=';' read -r -a task_arr <<<"$task_def"
+  for t in "${task_arr[@]}"; do
+    t="${t#"${t%%[![:space:]]*}"}"
+    if [ -n "$t" ]; then task_list="$task_list"$'\n'"  • $t"; fi
+  done
+  ask AGENT_TASKS "Tugas utama" "$task_def" "" \
+"TUGAS UTAMA = daftar pekerjaan agent. Tugas ini disebutkan agent saat kamu menyapanya.
+Daftar bawaan:$task_list
+Mau pakai daftar di atas? Langsung tekan Enter.
+Mau tulis sendiri? Pisahkan tiap tugas dengan titik koma (;), contoh:
+  Membalas pertanyaan pelanggan; Merangkum email harian; Mengingatkan jadwal rapat"
+  ask HERMES_TZ "Zona waktu" "${prev_tz:-Asia/Jakarta}" "" \
+"ZONA WAKTU = acuan jam dan tanggal agent, misalnya untuk pengingat.
+Asia/Jakarta = WIB, Asia/Makassar = WITA, Asia/Jayapura = WIT."
   [ -e "/usr/share/zoneinfo/$HERMES_TZ" ] || warn "Zona waktu '$HERMES_TZ' tidak dikenal sistem, tetap dipakai apa adanya."
-  ok "Agent: $AGENT_NAME · pemilik: ${TG_NAMES[0]} · ${#TG_IDS[@]} pengguna terdaftar"
+  ok "Identitas siap: $AGENT_NAME, $AGENT_ROLE · ${#TG_IDS[@]} orang boleh memberi perintah"
 
   # ---------- 5. tulis .env (upsert, tanpa duplikat), config, SOUL.md ----------
-  step "Menyimpan konfigurasi"
+  step "Menyimpan pengaturan"
+  info "Semua jawaban tadi disimpan ke folder $HDIR di server ini."
   as_user mkdir -p "$HDIR"
   as_user touch "$HDIR/.env"
   as_user chmod 600 "$HDIR/.env"
@@ -344,11 +416,11 @@ main() {
   upsert_env TELEGRAM_HOME_CHANNEL  "$TELEGRAM_HOME_CHANNEL"
   upsert_env "$KEYVAR"              "${!KEYVAR}"
   as_user chmod 600 "$HDIR/.env"
-  ok "$HDIR/.env ditulis (permission 600)"
+  ok ".env disimpan: berisi token & API key, dikunci supaya hanya akun $HUSER yang bisa membacanya"
 
   as_user "$HBIN" config set model.provider "$HERMES_PROVIDER" >/dev/null
   as_user "$HBIN" config set model.default  "$HERMES_MODEL"    >/dev/null
-  ok "Model diatur di $HDIR/config.yaml"
+  ok "config.yaml disimpan: berisi pilihan layanan dan model AI"
 
   # Simpan jawaban identitas (bukan rahasia) supaya jadi default saat dijalankan ulang
   printf 'AGENT_NAME=%s\nAGENT_ROLE=%s\nAGENT_ORG=%s\nAGENT_TASKS=%s\nHERMES_TZ=%s\nTELEGRAM_USER_MAP=%s\n' \
@@ -363,15 +435,15 @@ main() {
     stmp="$(mktemp)"
     build_soul >"$stmp"
     if as_user test -s "$SOUL" && as_user cat "$SOUL" | cmp -s - "$stmp"; then
-      ok "$SOUL sudah sesuai (tidak berubah)"
+      ok "SOUL.md sudah sesuai, tidak ada yang berubah"
     else
       if as_user test -s "$SOUL"; then
         bak="$SOUL.bak-$(date +%Y%m%d-%H%M%S)"
         as_user cp "$SOUL" "$bak"
-        ok "SOUL.md lama dibackup ke $bak"
+        ok "SOUL.md lama dicadangkan dulu ke $bak"
       fi
       as_user tee "$SOUL" <"$stmp" >/dev/null
-      ok "$SOUL ditulis (identitas $AGENT_NAME, Bahasa Indonesia)"
+      ok "SOUL.md disimpan: berisi kepribadian dan aturan $AGENT_NAME"
     fi
     rm -f "$stmp"
   fi
@@ -379,9 +451,11 @@ main() {
   # ---------- 6. systemd service ----------
   local SVC="${HERMES_SERVICE_NAME:-hermes-agent}"
   if [ "${HERMES_SKIP_SERVICE:-0}" = 1 ]; then
-    warn "Service dilewati. Jalankan manual: $HBIN gateway run"
+    warn "Service tidak dipasang (HERMES_SKIP_SERVICE=1). Nyalakan agent secara manual dengan: $HBIN gateway run"
   else
-    step "Memasang service $SVC (gateway Telegram 24 jam)"
+    step "Menyalakan agent 24 jam"
+    info "Agent dipasang sebagai \"service\": programnya berjalan terus di latar belakang," \
+         "tetap hidup walau terminal ditutup, dan menyala sendiri kalau server di-restart."
     $SUDO tee "/etc/systemd/system/$SVC.service" >/dev/null <<UNIT
 [Unit]
 Description=Hermes Agent Telegram Gateway
@@ -406,28 +480,35 @@ UNIT
     $SUDO systemctl enable "$SVC" >/dev/null 2>&1
     $SUDO systemctl restart "$SVC"
     sleep 3
-    if $SUDO systemctl is-active --quiet "$SVC"; then ok "Service $SVC berjalan"
-    else warn "Service belum aktif. Cek: sudo journalctl -u $SVC -n 50"; fi
+    if $SUDO systemctl is-active --quiet "$SVC"; then ok "Agent menyala (service: $SVC)"
+    else
+      warn "Agent belum berhasil menyala. Penyebab paling umum: token bot atau API key salah."
+      info "Lihat pesan error-nya dengan: sudo journalctl -u $SVC -n 50"
+    fi
   fi
 
   # ---------- selesai ----------
-  printf '\n%s%s Selesai!%s\n' "$C_G" "$C_B" "$C_0"
+  printf '\n%s%s━━ Selesai! %s sudah siap bekerja ━━%s\n' "$C_G" "$C_B" "$AGENT_NAME" "$C_0"
   cat <<DONE
-  Buka Telegram, cari bot kamu, lalu:
-    1. Kirim /new supaya mulai sesi baru (identitas baru dibaca di awal sesi)
-    2. Kirim: Halo
-  $AGENT_NAME akan menyapa ${TG_NAMES[0]} dalam Bahasa Indonesia dan menyebutkan tugasnya.
+
+  Cara mencoba:
+    1. Buka Telegram, cari bot kamu (nama yang kamu buat di @BotFather).
+    2. Kirim /new   → memulai percakapan baru supaya identitas terbaru dipakai.
+    3. Kirim Halo   → $AGENT_NAME akan menyapamu dan menyebutkan tugasnya.
+  Kalau tidak dibalas dalam 1 menit, lihat penyebabnya dengan: sudo journalctl -u $SVC -n 50
 
   File penting:
-    $SOUL      # identitas & aturan agent (edit lalu restart service)
-    $HDIR/.env         # token & API key (rahasia)
+    $SOUL
+        → kepribadian & aturan agent. Setelah diedit, jalankan: sudo systemctl restart $SVC
+    $HDIR/.env
+        → token & API key. Rahasia, jangan dibagikan.
 
-  Perintah berguna:
-    sudo systemctl status $SVC        # cek service
-    sudo systemctl restart $SVC       # terapkan perubahan SOUL.md
-    sudo journalctl -u $SVC -f        # lihat log
-    sudo -u $HUSER -i hermes model    # ganti provider / model
-    sudo -u $HUSER -i hermes doctor   # diagnosis
+  Perintah yang sering dipakai:
+    sudo systemctl status $SVC      → cek apakah agent sedang berjalan
+    sudo systemctl restart $SVC     → nyalakan ulang agent
+    sudo journalctl -u $SVC -f      → lihat aktivitas agent secara langsung (keluar: Ctrl+C)
+    sudo -u $HUSER -i hermes model     → ganti layanan/model AI
+    sudo -u $HUSER -i hermes doctor    → periksa kalau ada masalah
 DONE
 }
 
