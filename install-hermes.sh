@@ -38,7 +38,7 @@
 #    AGENT_ROLE             peran agent                      (default: asisten AI pribadi)
 #    AGENT_ORG              organisasi/perusahaan, "-" = tidak ada
 #    AGENT_TASKS            tugas utama, dipisah titik koma ";"
-#    HERMES_TZ              zona waktu agent                 (default: Asia/Jakarta)
+#    HERMES_TZ              zona waktu agent: nama kota, WIB/WITA/WIT, atau Asia/... (default: Asia/Jakarta)
 #    HERMES_SERVICE_NAME    nama service systemd             (default: hermes-agent)
 #    HERMES_SKIP_SERVICE=1  jangan pasang systemd service
 #    HERMES_SKIP_SOUL=1     jangan sentuh SOUL.md yang sudah ada
@@ -110,13 +110,84 @@ clean_name() { # buang karakter pemisah supaya aman disimpan di peta id:nama
   printf '%s' "$s"
 }
 
-tz_label() { # nama zona waktu yang ramah dibaca
+tz_label() { # nama zona waktu yang ramah dibaca, contoh: WIB (Asia/Jakarta), Asia/Tokyo (UTC+09:00)
+  local off
   case "$1" in
     Asia/Jakarta|Asia/Pontianak) printf 'WIB (%s)' "$1" ;;
     Asia/Makassar)               printf 'WITA (%s)' "$1" ;;
     Asia/Jayapura)               printf 'WIT (%s)' "$1" ;;
-    *)                           printf '%s' "$1" ;;
+    *) off="$(TZ="$1" date +%:z 2>/dev/null || true)"
+       if [ -n "$off" ]; then printf '%s (UTC%s)' "$1" "$off"; else printf '%s' "$1"; fi ;;
   esac
+}
+
+tz_valid() { # zona waktu dikenal sistem?
+  [ -n "$1" ] || return 1
+  case "$1" in *..*|/*) return 1 ;; esac
+  if [ -d /usr/share/zoneinfo ]; then [ -f "/usr/share/zoneinfo/$1" ]
+  else [[ "$1" =~ ^(UTC|[A-Z][A-Za-z_]+/[A-Za-z_/+-]+)$ ]]; fi
+}
+
+tz_resolve() { # ubah ketikan bebas (WIB, Bali, Tokyo, asia/kuala lumpur) jadi nama resmi; kosong kalau tidak dikenali
+  local raw="$1" key hit
+  key="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
+  key="$(printf '%s' "$key" | tr ' -' '__')"
+  [ -n "$key" ] || return 0
+  case "$key" in
+    # Indonesia: singkatan
+    wib) printf 'Asia/Jakarta'; return 0 ;;
+    wita) printf 'Asia/Makassar'; return 0 ;;
+    wit) printf 'Asia/Jayapura'; return 0 ;;
+    utc|gmt) printf 'UTC'; return 0 ;;
+    # Indonesia bagian barat (WIB)
+    jakarta|bandung|bogor|depok|bekasi|tangerang|serang|banten|cirebon|tasikmalaya|sukabumi|\
+    semarang|solo|surakarta|yogyakarta|yogya|jogja|jogjakarta|magelang|purwokerto|tegal|pekalongan|\
+    surabaya|malang|sidoarjo|kediri|madiun|jember|banyuwangi|\
+    medan|banda_aceh|aceh|padang|bukittinggi|pekanbaru|riau|batam|tanjung_pinang|jambi|palembang|\
+    bengkulu|lampung|bandar_lampung|pangkal_pinang|bangka|belitung|pontianak|singkawang|\
+    palangkaraya|palangka_raya|sampit)
+      if [ "$key" = pontianak ] || [ "$key" = singkawang ]; then printf 'Asia/Pontianak'; else printf 'Asia/Jakarta'; fi
+      return 0 ;;
+    # Indonesia bagian tengah (WITA)
+    makassar|ujung_pandang|bali|denpasar|badung|kuta|ubud|lombok|mataram|kupang|labuan_bajo|flores|\
+    balikpapan|samarinda|banjarmasin|banjarbaru|tarakan|bontang|ikn|nusantara|\
+    manado|palu|kendari|gorontalo|parepare|bitung)
+      printf 'Asia/Makassar'; return 0 ;;
+    # Indonesia bagian timur (WIT)
+    jayapura|papua|sorong|manokwari|merauke|timika|nabire|biak|ambon|maluku|ternate|tidore|tual)
+      printf 'Asia/Jayapura'; return 0 ;;
+    # kota besar Asia yang namanya beda dengan nama resmi
+    kl|kuala_lumpur|malaysia) printf 'Asia/Kuala_Lumpur'; return 0 ;;
+    singapura|singapore) printf 'Asia/Singapore'; return 0 ;;
+    saigon|ho_chi_minh|hcmc|vietnam) printf 'Asia/Ho_Chi_Minh'; return 0 ;;
+    hanoi) printf 'Asia/Ho_Chi_Minh'; return 0 ;;
+    beijing|peking|china|tiongkok|cina) printf 'Asia/Shanghai'; return 0 ;;
+    mumbai|bombay|delhi|new_delhi|india|bangalore|bengaluru) printf 'Asia/Kolkata'; return 0 ;;
+    mekah|makkah|mecca|madinah|medina|arab_saudi|saudi) printf 'Asia/Riyadh'; return 0 ;;
+    abu_dhabi|uae) printf 'Asia/Dubai'; return 0 ;;
+    jepang|japan) printf 'Asia/Tokyo'; return 0 ;;
+    korea|korea_selatan) printf 'Asia/Seoul'; return 0 ;;
+    filipina|philippines) printf 'Asia/Manila'; return 0 ;;
+    thailand) printf 'Asia/Bangkok'; return 0 ;;
+    brunei) printf 'Asia/Brunei'; return 0 ;;
+    timor_leste|dili) printf 'Asia/Dili'; return 0 ;;
+  esac
+  # Cocokkan dengan daftar zona waktu sistem, tidak peduli huruf besar/kecil:
+  # "tokyo" → Asia/Tokyo, "asia/kuala lumpur" → Asia/Kuala_Lumpur, "europe/london" → Europe/London
+  if [ -d /usr/share/zoneinfo ]; then
+    if [[ "$key" == */* ]]; then
+      hit="$(cd /usr/share/zoneinfo && find . -type f -ipath "./$key" 2>/dev/null | head -1)"
+    else
+      hit="$(cd /usr/share/zoneinfo && find ./Asia -maxdepth 1 -type f -iname "$key" 2>/dev/null | head -1)"
+      [ -n "$hit" ] || hit="$(cd /usr/share/zoneinfo && find . -mindepth 2 -maxdepth 2 -type f -iname "$key" \
+                              -not -path './posix/*' -not -path './right/*' 2>/dev/null | head -1)"
+    fi
+    if [ -n "$hit" ]; then printf '%s' "${hit#./}"; return 0; fi
+  elif tz_valid "$raw"; then
+    printf '%s' "$raw"
+  fi
+  return 0
 }
 
 build_soul() { # cetak isi SOUL.md dari variabel AGENT_*, TG_IDS, TG_NAMES, HERMES_TZ
@@ -219,10 +290,10 @@ main() {
     SUDO="sudo"
     if ! sudo -n true 2>/dev/null; then
       info "" "Installer butuh akses administrator (sudo) untuk memasang program." \
-           "Kalau muncul \"[sudo] password for ...\", ketik password login server kamu lalu tekan Enter." \
+           "Kalau muncul \"Password sudo:\", ketik password login server kamu lalu tekan Enter." \
            "Password-nya tidak terlihat saat diketik. Itu normal."
     fi
-    sudo -v </dev/tty 2>/dev/null || sudo -v || die "Akses sudo ditolak. Pastikan password benar dan akun ini boleh memakai sudo."
+    sudo -v -p "  Password sudo: " </dev/tty 2>/dev/null || sudo -v -p "  Password sudo: " || die "Akses sudo ditolak. Pastikan password benar dan akun ini boleh memakai sudo."
   fi
   ok "Akses administrator siap"
 
@@ -232,11 +303,11 @@ main() {
        "dan curl (untuk mengakses internet). Biasanya 1 sampai 3 menit. Tunggu sampai muncul tanda ✔."
   if [ "$family" = debian ]; then
     $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl tar coreutils nano ca-certificates libatomic1 >/dev/null
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git curl tar coreutils nano ca-certificates libatomic1 tzdata >/dev/null
   else
-    $SUDO dnf install -y -q git curl tar coreutils nano ca-certificates libatomic >/dev/null
+    $SUDO dnf install -y -q git curl tar coreutils nano ca-certificates libatomic tzdata >/dev/null
   fi
-  ok "git, curl, tar, coreutils, nano, libatomic terpasang"
+  ok "git, curl, tar, coreutils, nano, libatomic, tzdata terpasang"
 
   local HUSER
   if [ "$(id -u)" -eq 0 ]; then
@@ -254,6 +325,9 @@ main() {
   fi
   local HHOME; HHOME="$(getent passwd "$HUSER" | cut -d: -f6)"
   local HDIR="$HHOME/.hermes" HBIN="$HHOME/.local/bin/hermes"
+  # Untuk tampilan: jangan munculkan nama akun atau /home/<nama>
+  local SHOW_DIR="~/.hermes" HCMD="hermes"
+  if [ "$(id -un)" != "$HUSER" ]; then SHOW_DIR="$HDIR"; HCMD="sudo -u $HUSER -i hermes"; fi
 
   as_user() { # jalankan perintah sebagai user agent, dengan HOME-nya sendiri
     if [ "$(id -un)" = "$HUSER" ]; then (cd "$HHOME" && env HOME="$HHOME" "$@")
@@ -274,9 +348,9 @@ main() {
   else
     info "Programnya diunduh dari situs resmi. Biasanya 2 sampai 5 menit. Mohon tunggu."
     as_user bash -c "set -o pipefail; curl -fsSL '$HERMES_INSTALL_URL' | bash -s -- --non-interactive" \
-      || die "Installer Hermes gagal (cek koneksi ke ${HERMES_INSTALL_URL%%/install.sh} dan log di $HDIR/logs/install.log)."
-    [ -x "$HBIN" ] || die "Perintah hermes tidak ditemukan di $HBIN setelah instalasi."
-    ok "Hermes berhasil dipasang di $HBIN"
+      || die "Installer Hermes gagal (cek koneksi ke ${HERMES_INSTALL_URL%%/install.sh} dan log di $SHOW_DIR/logs/install.log)."
+    [ -x "$HBIN" ] || die "Program Hermes tidak ditemukan setelah instalasi. Coba jalankan installer sekali lagi."
+    ok "Hermes berhasil dipasang"
   fi
 
   # ---------- 4a. data Telegram & AI ----------
@@ -308,11 +382,12 @@ Tempel token lalu tekan Enter. Tulisannya memang tidak muncul di layar."
   TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN// /}"
   [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] \
     || die "Format token bot salah. Token yang benar berbentuk angka:huruf (contoh 123456789:AAH4x...). Salin ulang dari @BotFather, lalu jalankan installer lagi."
-  ask TELEGRAM_ALLOWED_USERS "User ID Telegram yang boleh memberi perintah" "" "" \
+  ask TELEGRAM_ALLOWED_USERS "Tempel User ID Telegram yang boleh memberi perintah" "" secret \
 "USER ID = nomor unik akun Telegram. Hanya nomor yang ditulis di sini yang boleh
 memerintah bot. Pesan dari orang lain akan diabaikan, jadi bot kamu aman.
 Cara mendapatkannya: buka Telegram → cari @userinfobot → kirim pesan apa saja → salin angka \"Id\".
-Contoh: 6123456789. Untuk beberapa orang, pisahkan dengan koma: 6123456789,6987654321"
+Contoh: 6123456789. Untuk beberapa orang, pisahkan dengan koma: 6123456789,6987654321
+Demi privasi, angkanya juga tidak ditampilkan di layar saat ditempel."
   TELEGRAM_ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS// /}"
   [[ "$TELEGRAM_ALLOWED_USERS" =~ ^[0-9]+(,[0-9]+)*$ ]] \
     || die "User ID harus berupa angka saja, contoh 6123456789 (beberapa orang dipisah koma). Cek lagi di @userinfobot, lalu jalankan installer lagi."
@@ -391,15 +466,36 @@ Daftar bawaan:$task_list
 Mau pakai daftar di atas? Langsung tekan Enter.
 Mau tulis sendiri? Pisahkan tiap tugas dengan titik koma (;), contoh:
   Membalas pertanyaan pelanggan; Merangkum email harian; Mengingatkan jadwal rapat"
-  ask HERMES_TZ "Zona waktu" "${prev_tz:-Asia/Jakarta}" "" \
-"ZONA WAKTU = acuan jam dan tanggal agent, misalnya untuk pengingat.
-Asia/Jakarta = WIB, Asia/Makassar = WITA, Asia/Jayapura = WIT."
-  [ -e "/usr/share/zoneinfo/$HERMES_TZ" ] || warn "Zona waktu '$HERMES_TZ' tidak dikenal sistem, tetap dipakai apa adanya."
+  local tz_in tz_ok tz_hint
+  tz_hint="ZONA WAKTU = acuan jam dan tanggal agent, misalnya untuk pengingat.
+Cukup ketik nama kota atau singkatannya, installer akan mencarikan zona waktunya:
+  • Indonesia : WIB, WITA, WIT, atau nama kota (Jakarta, Bandung, Surabaya, Medan,
+                Bali, Makassar, Balikpapan, Manado, Jayapura, Ambon, dll.)
+  • Asia lain : Singapore, Kuala Lumpur, Bangkok, Tokyo, Seoul, Dubai, dll.
+  • Nama resmi juga boleh, contoh: Asia/Jakarta atau Asia/Tokyo
+Tekan Enter untuk memakai yang ada di [kurung siku]."
+  tz_in="${HERMES_TZ:-}"
+  while :; do
+    if [ -z "$tz_in" ]; then
+      HERMES_TZ=""
+      ask HERMES_TZ "Zona waktu (nama kota atau WIB/WITA/WIT)" "${prev_tz:-Asia/Jakarta}" "" "$tz_hint"
+      tz_in="$HERMES_TZ"
+    fi
+    tz_ok="$(tz_resolve "$tz_in")"
+    if [ -n "$tz_ok" ] && tz_valid "$tz_ok"; then HERMES_TZ="$tz_ok"; break; fi
+    if [ "$TTY_OK" != 1 ]; then
+      warn "Zona waktu '$tz_in' tidak dikenali, jadi dipakai Asia/Jakarta (WIB)."
+      HERMES_TZ="Asia/Jakarta"; break
+    fi
+    warn "Zona waktu '$tz_in' tidak ditemukan. Coba ketik nama kota lain yang terdekat, atau WIB/WITA/WIT."
+    tz_in=""; tz_hint=""
+  done
+  ok "Zona waktu: $(tz_label "$HERMES_TZ") · jam di sana sekarang $(TZ="$HERMES_TZ" date +%H:%M 2>/dev/null || echo '?')"
   ok "Identitas siap: $AGENT_NAME, $AGENT_ROLE · ${#TG_IDS[@]} orang boleh memberi perintah"
 
   # ---------- 5. tulis .env (upsert, tanpa duplikat), config, SOUL.md ----------
   step "Menyimpan pengaturan"
-  info "Semua jawaban tadi disimpan ke folder $HDIR di server ini."
+  info "Semua jawaban tadi disimpan di server ini, di folder $SHOW_DIR."
   as_user mkdir -p "$HDIR"
   as_user touch "$HDIR/.env"
   as_user chmod 600 "$HDIR/.env"
@@ -416,7 +512,7 @@ Asia/Jakarta = WIB, Asia/Makassar = WITA, Asia/Jayapura = WIT."
   upsert_env TELEGRAM_HOME_CHANNEL  "$TELEGRAM_HOME_CHANNEL"
   upsert_env "$KEYVAR"              "${!KEYVAR}"
   as_user chmod 600 "$HDIR/.env"
-  ok ".env disimpan: berisi token & API key, dikunci supaya hanya akun $HUSER yang bisa membacanya"
+  ok ".env disimpan: berisi token & API key, dikunci supaya hanya akun agent yang bisa membacanya"
 
   as_user "$HBIN" config set model.provider "$HERMES_PROVIDER" >/dev/null
   as_user "$HBIN" config set model.default  "$HERMES_MODEL"    >/dev/null
@@ -440,7 +536,7 @@ Asia/Jakarta = WIB, Asia/Makassar = WITA, Asia/Jayapura = WIT."
       if as_user test -s "$SOUL"; then
         bak="$SOUL.bak-$(date +%Y%m%d-%H%M%S)"
         as_user cp "$SOUL" "$bak"
-        ok "SOUL.md lama dicadangkan dulu ke $bak"
+        ok "SOUL.md lama dicadangkan dulu sebagai ${bak##*/}"
       fi
       as_user tee "$SOUL" <"$stmp" >/dev/null
       ok "SOUL.md disimpan: berisi kepribadian dan aturan $AGENT_NAME"
@@ -451,7 +547,7 @@ Asia/Jakarta = WIB, Asia/Makassar = WITA, Asia/Jayapura = WIT."
   # ---------- 6. systemd service ----------
   local SVC="${HERMES_SERVICE_NAME:-hermes-agent}"
   if [ "${HERMES_SKIP_SERVICE:-0}" = 1 ]; then
-    warn "Service tidak dipasang (HERMES_SKIP_SERVICE=1). Nyalakan agent secara manual dengan: $HBIN gateway run"
+    warn "Service tidak dipasang (HERMES_SKIP_SERVICE=1). Nyalakan agent secara manual dengan: $HCMD gateway run"
   else
     step "Menyalakan agent 24 jam"
     info "Agent dipasang sebagai \"service\": programnya berjalan terus di latar belakang," \
@@ -498,18 +594,21 @@ UNIT
   Kalau tidak dibalas dalam 1 menit, lihat penyebabnya dengan: sudo journalctl -u $SVC -n 50
 
   File penting:
-    $SOUL
+    $SHOW_DIR/SOUL.md
         → kepribadian & aturan agent. Setelah diedit, jalankan: sudo systemctl restart $SVC
-    $HDIR/.env
+    $SHOW_DIR/.env
         → token & API key. Rahasia, jangan dibagikan.
 
   Perintah yang sering dipakai:
-    sudo systemctl status $SVC      → cek apakah agent sedang berjalan
-    sudo systemctl restart $SVC     → nyalakan ulang agent
-    sudo journalctl -u $SVC -f      → lihat aktivitas agent secara langsung (keluar: Ctrl+C)
-    sudo -u $HUSER -i hermes model     → ganti layanan/model AI
-    sudo -u $HUSER -i hermes doctor    → periksa kalau ada masalah
 DONE
+  local row
+  for row in "sudo systemctl status $SVC|cek apakah agent sedang berjalan" \
+             "sudo systemctl restart $SVC|nyalakan ulang agent" \
+             "sudo journalctl -u $SVC -f|lihat aktivitas agent secara langsung (keluar: Ctrl+C)" \
+             "$HCMD model|ganti layanan/model AI" \
+             "$HCMD doctor|periksa kalau ada masalah"; do
+    printf '    %-38s → %s\n' "${row%%|*}" "${row#*|}"
+  done
 }
 
 main "$@"
